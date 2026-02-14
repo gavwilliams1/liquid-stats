@@ -51,7 +51,7 @@ git add game_events_part1.csv game_events_part2.csv
 git add game_lineups_part1.csv game_lineups_part2.csv game_lineups_part3.csv
 git commit -m "Add squad value dashboard"
 git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+git remote add origin https://github.com/gavwilliams1/liquid-stats.git
 git push -u origin main
 ```
 
