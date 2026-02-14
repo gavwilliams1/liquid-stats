@@ -380,17 +380,30 @@ def _run_home_formations_section():
 
 @st.cache_data
 def load_scored_not_lost_streaks():
-    """For each player: current streak of games in which they scored and their team did not lose. Return top 10."""
+    """Top 10 longest current streak: scored and team did not lose. Domestic league only.
+    Only includes players who scored and played at least one domestic league match in the latest year of data (excludes retired)."""
     appearances = load_csv(DATA_DIR, "appearances")
     games = load_csv(DATA_DIR, "games")
+    games = games[games["competition_type"] == "domestic_league"]
+    domestic_game_ids = set(games["game_id"])
+    appearances = appearances[appearances["game_id"].isin(domestic_game_ids)]
     appearances["date"] = pd.to_datetime(appearances["date"], errors="coerce")
     appearances = appearances.dropna(subset=["date"])
     appearances["goals"] = pd.to_numeric(appearances["goals"], errors="coerce").fillna(0).astype(int)
-    appearances = appearances[appearances["goals"] > 0]
-    if appearances.empty:
+    latest_year = appearances["date"].max().year
+    # Players who played in latest year
+    played_latest = set(appearances[appearances["date"].dt.year == latest_year]["player_id"].unique())
+    # Players who scored in latest year (domestic league)
+    scored_latest = set(
+        appearances[(appearances["date"].dt.year == latest_year) & (appearances["goals"] > 0)]["player_id"].unique()
+    )
+    active_scorers = played_latest & scored_latest
+    appearances_scored = appearances[appearances["goals"] > 0]
+    appearances_scored = appearances_scored[appearances_scored["player_id"].isin(active_scorers)]
+    if appearances_scored.empty:
         return pd.DataFrame()
     games = games[["game_id", "home_club_id", "away_club_id", "home_club_goals", "away_club_goals"]].copy()
-    merged = appearances[["player_id", "game_id", "date", "player_club_id", "player_name"]].merge(
+    merged = appearances_scored[["player_id", "game_id", "date", "player_club_id", "player_name"]].merge(
         games, on="game_id", how="inner"
     )
     merged["player_club_id"] = merged["player_club_id"].astype(int)
@@ -436,7 +449,7 @@ def _run_scored_not_lost_streak_section():
         return
     display = top10[["player_name", "streak"]].rename(columns={"player_name": "Player", "streak": "Current streak"})
     st.dataframe(display, use_container_width=True, hide_index=True)
-    st.caption("Current streak = consecutive games (from most recent backwards) in which the player scored and their team did not lose (win or draw).")
+    st.caption("Domestic league matches only. Only players who scored and played in the latest year of data (active players). Streak = consecutive games (most recent first) with a goal and no defeat (win or draw).")
 
 
 # Professional layout / typography (Athletic-inspired)
