@@ -67,7 +67,8 @@ def load_data():
 
 @st.cache_data
 def squad_value_by_league_over_time(clubs_top5, valuations):
-    """Squad value by year: one value per year = highest total squad value in that year (per league)."""
+    """Squad value by year: one value per year = highest total squad value in that year (per league).
+    Excludes the final year if incomplete (data not through full year) to avoid a misleading drop."""
     club_ids = set(clubs_top5["club_id"])
     v = valuations[valuations["current_club_id"].isin(club_ids)].copy()
     v = v.merge(
@@ -77,6 +78,12 @@ def squad_value_by_league_over_time(clubs_top5, valuations):
         how="left",
     )
     v = v.dropna(subset=["league_id"])
+    # Exclude last year if incomplete: if latest valuation is before Oct 1 of that year, drop that year
+    max_date = v["date"].max()
+    if pd.notna(max_date):
+        last_year = max_date.year
+        if max_date.month < 10:
+            v = v[v["date"].dt.year < last_year]
     v["month"] = v["date"].dt.to_period("M")
     by_month_league = (
         v.groupby(["month", "league_id", "league_name"])
@@ -95,8 +102,12 @@ def squad_value_by_league_over_time(clubs_top5, valuations):
 
 @st.cache_data
 def squad_value_by_club_over_time(club_id, valuations):
-    """Squad value by year for one club: one value per year = highest total in that year."""
+    """Squad value by year for one club: one value per year = highest total in that year.
+    Excludes the final year if incomplete to avoid a misleading drop."""
     v = valuations[valuations["current_club_id"] == club_id].copy()
+    max_date = v["date"].max()
+    if pd.notna(max_date) and max_date.month < 10:
+        v = v[v["date"].dt.year < max_date.year]
     v["month"] = v["date"].dt.to_period("M")
     by_month = v.groupby("month").agg(squad_value_eur=("market_value_in_eur", "sum")).reset_index()
     by_month["year"] = by_month["month"].apply(lambda p: p.year)
@@ -121,23 +132,41 @@ def format_eur(x):
 
 @st.cache_data
 def load_appearances_data():
-    """Load appearances and players; compute min/max year for timeframe."""
+    """Load appearances, players, clubs; compute timeframe and club_ids still in each league (latest season = 2025-style)."""
     appearances = load_csv(DATA_DIR, "appearances")
     players = load_csv(DATA_DIR, "players")
+    clubs = load_csv(DATA_DIR, "clubs")
     appearances["_date"] = pd.to_datetime(appearances["date"], errors="coerce")
     valid = appearances["_date"].dropna()
     year_min = int(valid.min().year) if len(valid) else None
     year_max = int(valid.max().year) if len(valid) else None
     appearances = appearances.drop(columns=["_date"])
-    return appearances, players, year_min, year_max
+    # Clubs still in each league: use latest season in dataset (e.g. 2024/2025)
+    clubs_top5 = clubs[clubs["domestic_competition_id"].isin(TOP5_LEAGUES)].copy()
+    clubs_top5["last_season_num"] = pd.to_numeric(clubs_top5["last_season"], errors="coerce")
+    latest_season = clubs_top5["last_season_num"].max()
+    club_ids_per_league = {}
+    for league_id in TOP5_LEAGUES:
+        in_league = clubs_top5[
+            (clubs_top5["domestic_competition_id"] == league_id)
+            & (clubs_top5["last_season_num"] == latest_season)
+        ]
+        club_ids_per_league[league_id] = set(in_league["club_id"].dropna().astype(int))
+    return appearances, players, year_min, year_max, club_ids_per_league
 
 
 @st.cache_data
-def appearances_top10_in_league(league_id: str, league_name: str, appearances: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
-    """Top 10 current players in this league by appearances in this league."""
+def appearances_top10_in_league(
+    league_id: str,
+    league_name: str,
+    appearances: pd.DataFrame,
+    players: pd.DataFrame,
+    club_ids_current: set,
+) -> pd.DataFrame:
+    """Top 10 players still in this league (current club in league as of latest season) by appearances in this league."""
     current_in_league = players[
-        players["current_club_domestic_competition_id"].fillna("").eq(league_id)
-        & players["current_club_id"].notna()
+        players["current_club_id"].notna()
+        & players["current_club_id"].astype(int).isin(club_ids_current)
     ][["player_id", "name"]].drop_duplicates(subset=["player_id"])
     app_in_league = appearances[appearances["competition_id"] == league_id]
     counts = app_in_league.groupby("player_id").size().reset_index(name="appearances")
@@ -221,15 +250,15 @@ def _run_appearances_section():
     st.header("Appearances")
     st.subheader("Top 10 current players by appearances")
     with st.spinner("Loading appearances data…"):
-        appearances, players, year_min, year_max = load_appearances_data()
+        appearances, players, year_min, year_max, club_ids_per_league = load_appearances_data()
 
     if year_min is not None and year_max is not None:
         timeframe_str = f"Appearances between {year_min} and {year_max}. Data covers only this period; totals before or after are not included."
     else:
         timeframe_str = "Appearance dates could not be determined."
 
-    # Per-league: only players who *currently* play in that league (current_club_domestic_competition_id)
-    st.markdown("**Per league** — Only players who still play in that league. Appearances counted in that competition only.")
+    # Per-league: only players still in that league (current club in league as of latest season / 2025)
+    st.markdown("**Per league** — Only players who still play in that league (current squad in latest season). Appearances in that competition only.")
     comp_to_name = {
         "GB1": "Premier League",
         "ES1": "La Liga",
@@ -239,7 +268,9 @@ def _run_appearances_section():
     }
     for league_id in TOP5_LEAGUES:
         league_name = comp_to_name[league_id]
-        top10 = appearances_top10_in_league(league_id, league_name, appearances, players)
+        top10 = appearances_top10_in_league(
+            league_id, league_name, appearances, players, club_ids_per_league.get(league_id, set())
+        )
         _bar_chart_appearances(
             top10,
             f"Top 10 — {league_name}",
@@ -264,68 +295,148 @@ def _run_appearances_section():
         timeframe_str,
     )
 
-    st.caption("Current players = players with a current club in the dataset. Per‑league charts exclude players who have since moved to another league.")
+    st.caption("Current players = players with a current club in the dataset. Per‑league charts only include players still in that league (latest season).")
 
 
-# ---- Arsenal won the league at White Hart Lane 2004 ----
+# ---- Home formations: rolling 3-month average of top 8 ----
 
 @st.cache_data
-def load_arsenal_2004_match():
-    """Try to find the Arsenal title-clinching match at White Hart Lane (25 Apr 2004) in games data."""
-    try:
-        games = load_csv(DATA_DIR, "games")
-    except FileNotFoundError:
-        return None
+def load_home_formations_series(competition_id: str | None):
+    """Use club_games (home) + games; domestic league only. Optionally filter by competition_id (league).
+    competition_id=None: all domestic leagues; else e.g. GB1 for Premier League. Top 8 formations, rolling 3-month avg."""
+    club_games = load_csv(DATA_DIR, "club_games")
+    games = load_csv(DATA_DIR, "games")
     games["date"] = pd.to_datetime(games["date"], errors="coerce")
-    gb1 = games[games["competition_id"] == "GB1"]
-    # Season 2003 = 2003/04; match was 25 April 2004
-    g = gb1[
-        (gb1["date"].dt.year == 2004)
-        & (
-            (gb1["home_club_name"].str.contains("Tottenham", case=False, na=False))
-            & (gb1["away_club_name"].str.contains("Arsenal", case=False, na=False))
-        )
+    games = games[games["competition_type"] == "domestic_league"]
+    if competition_id is not None:
+        games = games[games["competition_id"] == competition_id]
+    home_games = club_games[club_games["hosting"].str.upper().eq("HOME")][["game_id"]].drop_duplicates()
+    merged = home_games.merge(
+        games[["game_id", "date", "home_club_formation"]].rename(columns={"home_club_formation": "formation"}),
+        on="game_id",
+        how="inner",
+    )
+    merged = merged.dropna(subset=["date", "formation"])
+    merged["month"] = merged["date"].dt.to_period("M").apply(lambda p: p.to_timestamp())
+    by_month_form = merged.groupby(["month", "formation"]).size().reset_index(name="count")
+    top8_formations = by_month_form.groupby("formation")["count"].sum().nlargest(8).index.tolist()
+    by_month_form = by_month_form[by_month_form["formation"].isin(top8_formations)]
+    wide = by_month_form.pivot_table(index="month", columns="formation", values="count", aggfunc="sum", fill_value=0)
+    wide = wide.reindex(columns=top8_formations, fill_value=0)
+    roll = wide.rolling(3, min_periods=1).mean()
+    roll = roll.reset_index()
+    return pd.melt(roll, id_vars=["month"], value_name="rolling_avg", var_name="formation")
+
+
+def _run_home_formations_section():
+    """Time series: rolling 3-month average of the 8 most popular home formations; split by domestic league."""
+    st.header("Home formations")
+    st.subheader("Rolling 3-month average of the 8 most popular home-team formations")
+    league_options = [
+        ("All domestic leagues", None),
+        ("Premier League", "GB1"),
+        ("La Liga", "ES1"),
+        ("Serie A", "IT1"),
+        ("Bundesliga", "L1"),
+        ("Ligue 1", "FR1"),
     ]
-    if len(g) == 0:
-        return None
-    return g.iloc[0].to_dict()
+    league_label = st.sidebar.selectbox(
+        "League (domestic only)",
+        [x[0] for x in league_options],
+        index=0,
+        key="formations_league",
+    )
+    competition_id = next(x[1] for x in league_options if x[0] == league_label)
+    with st.spinner("Loading formations data…"):
+        df = load_home_formations_series(competition_id)
+    if df.empty:
+        st.info("No formation data available for this selection.")
+        return
+    title_suffix = f" — {league_label}" if league_label != "All domestic leagues" else " (all domestic leagues)"
+    fig = px.line(
+        df,
+        x="month",
+        y="rolling_avg",
+        color="formation",
+        labels={"rolling_avg": "Rolling 3-month average (games)", "month": "Date"},
+        title="Home-team formations over time (top 8 by usage)" + title_suffix,
+    )
+    fig.update_layout(
+        font=dict(family=CHART_FONT, size=13, color="#1a1a1a"),
+        paper_bgcolor=CHART_BG,
+        plot_bgcolor=CHART_BG,
+        margin=CHART_MARGIN,
+        title=dict(font=dict(size=18), x=0, xanchor="left"),
+        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False),
+        legend_title="Formation",
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Domestic (non-cup) league games only. Data: club_games (home) + games. Rolling 3-month average.")
 
 
-def _run_arsenal_2004_section():
-    """Dedicated section: Arsenal won the Premier League at White Hart Lane, 2004."""
-    st.header("Arsenal won the league at White Hart Lane")
-    st.subheader("25 April 2004")
+# ---- Top 10 longest current streak: not lost when scored ----
 
-    match = load_arsenal_2004_match()
+@st.cache_data
+def load_scored_not_lost_streaks():
+    """For each player: current streak of games in which they scored and their team did not lose. Return top 10."""
+    appearances = load_csv(DATA_DIR, "appearances")
+    games = load_csv(DATA_DIR, "games")
+    appearances["date"] = pd.to_datetime(appearances["date"], errors="coerce")
+    appearances = appearances.dropna(subset=["date"])
+    appearances["goals"] = pd.to_numeric(appearances["goals"], errors="coerce").fillna(0).astype(int)
+    appearances = appearances[appearances["goals"] > 0]
+    if appearances.empty:
+        return pd.DataFrame()
+    games = games[["game_id", "home_club_id", "away_club_id", "home_club_goals", "away_club_goals"]].copy()
+    merged = appearances[["player_id", "game_id", "date", "player_club_id", "player_name"]].merge(
+        games, on="game_id", how="inner"
+    )
+    merged["player_club_id"] = merged["player_club_id"].astype(int)
+    merged["home_club_id"] = merged["home_club_id"].astype(int)
+    merged["team_goals"] = merged.apply(
+        lambda r: r["home_club_goals"] if r["player_club_id"] == r["home_club_id"] else r["away_club_goals"],
+        axis=1,
+    )
+    merged["opp_goals"] = merged.apply(
+        lambda r: r["away_club_goals"] if r["player_club_id"] == r["home_club_id"] else r["home_club_goals"],
+        axis=1,
+    )
+    merged["not_lost"] = merged["team_goals"] >= merged["opp_goals"]
+    merged = merged.sort_values(["player_id", "date"], ascending=[True, False])
+    streak_list = []
+    for player_id, g in merged.groupby("player_id"):
+        n = 0
+        for _, row in g.iterrows():
+            if row["not_lost"]:
+                n += 1
+            else:
+                break
+        if n > 0:
+            streak_list.append({
+                "player_id": player_id,
+                "player_name": g["player_name"].iloc[0],
+                "streak": n,
+            })
+    streaks = pd.DataFrame(streak_list)
+    if streaks.empty:
+        return pd.DataFrame()
+    return streaks.nlargest(10, "streak")
 
-    if match:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Home", match.get("home_club_name", "—"))
-        with col2:
-            score = f"{match.get('home_club_goals', '')} – {match.get('away_club_goals', '')}"
-            st.metric("Score", score)
-        with col3:
-            st.metric("Away", match.get("away_club_name", "—"))
-        st.markdown(f"**Stadium:** {match.get('stadium', 'White Hart Lane')}  \n**Attendance:** {match.get('attendance', '—')}  \n**Referee:** {match.get('referee', '—')}")
-        date_str = pd.to_datetime(match.get("date")).strftime("%d %B %Y") if match.get("date") else "25 April 2004"
-        st.caption(f"Match data from dataset · {date_str}")
-    else:
-        st.markdown(
-            """
-            **Tottenham Hotspur 2–2 Arsenal**  
-            *Premier League 2003/04*
 
-            Arsenal clinched the Premier League title at the home of their north London rivals. 
-            A 2–2 draw at White Hart Lane on **25 April 2004** gave the Invincibles an unassailable lead; 
-            they would finish the season unbeaten (26 wins, 12 draws).
-
-            *Match-level data in this dataset starts from 2013, so this fixture is not in the games file. 
-            The summary above is from the historic record.*
-            """
-        )
-        st.divider()
-        st.markdown("**Stadium:** White Hart Lane  \n**Date:** 25 April 2004  \n**Competition:** Premier League (GB1)")
+def _run_scored_not_lost_streak_section():
+    """Top 10 longest current streak of players who have not lost when they have scored."""
+    st.header("Scored & not lost")
+    st.subheader("Top 10 longest current streak (games with a goal and no defeat)")
+    with st.spinner("Computing streaks…"):
+        top10 = load_scored_not_lost_streaks()
+    if top10.empty:
+        st.info("No streak data available.")
+        return
+    display = top10[["player_name", "streak"]].rename(columns={"player_name": "Player", "streak": "Current streak"})
+    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.caption("Current streak = consecutive games (from most recent backwards) in which the player scored and their team did not lose (win or draw).")
 
 
 # Professional layout / typography (Athletic-inspired)
@@ -349,10 +460,10 @@ def main():
     st.title("European Leagues")
     st.caption("Squad value & appearances · Top 5 leagues")
 
-    # Top-level section: Squad value, Appearances, or Arsenal 2004
+    # Top-level section
     section = st.sidebar.radio(
         "Section",
-        ["Squad value", "Appearances", "Arsenal 2004"],
+        ["Squad value", "Appearances", "Home formations", "Scored & not lost streak"],
         index=0,
         label_visibility="collapsed",
     )
@@ -360,8 +471,11 @@ def main():
     if section == "Appearances":
         _run_appearances_section()
         return
-    if section == "Arsenal 2004":
-        _run_arsenal_2004_section()
+    if section == "Home formations":
+        _run_home_formations_section()
+        return
+    if section == "Scored & not lost streak":
+        _run_scored_not_lost_streak_section()
         return
 
     # ---- Squad value section ----
@@ -400,7 +514,7 @@ def main():
                 yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False),
             )
             st.plotly_chart(fig, use_container_width=True)
-        st.caption("One value per year (highest total squad value in that year). Player valuations aggregated by current club and league.")
+        st.caption("One value per year (highest total squad value in that year). The latest year is omitted if valuation data does not yet cover the full year (avoids a misleading drop).")
 
     else:
         st.header("Club detail")
