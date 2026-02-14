@@ -1,7 +1,7 @@
 """
 Squad value dashboard: top 5 European leagues.
-Links clubs, players, and player_valuations CSVs.
-Supports single-file or split (_part1 / _part2) CSVs for large datasets.
+All CSV data is loaded via load_csv() so that both single files and split
+(_part1, _part2, ...) files are used, giving the latest data including 2026.
 """
 import re
 import streamlit as st
@@ -14,7 +14,7 @@ TOP5_LEAGUES = ("GB1", "ES1", "IT1", "L1", "FR1")  # Premier League, La Liga, Se
 
 
 def load_csv(basedir: Path, name: str) -> pd.DataFrame:
-    """Load a CSV by base name: uses name.csv if present, else name_part1.csv, name_part2.csv, ... (all parts concatenated)."""
+    """Load a CSV by base name: uses name.csv if present, else name_part1.csv, name_part2.csv, ... (all parts concatenated). Ensures latest data from split files is included."""
     single = basedir / f"{name}.csv"
     if single.exists():
         return pd.read_csv(single)
@@ -67,8 +67,7 @@ def load_data():
 
 @st.cache_data
 def squad_value_by_league_over_time(clubs_top5, valuations):
-    """Squad value by year: one value per year = highest total squad value in that year (per league).
-    Excludes the final year if incomplete (data not through full year) to avoid a misleading drop."""
+    """Squad value by year: one value per year = highest total squad value in that year (per league). Includes all years present in the data (including 2026)."""
     club_ids = set(clubs_top5["club_id"])
     v = valuations[valuations["current_club_id"].isin(club_ids)].copy()
     v = v.merge(
@@ -78,12 +77,6 @@ def squad_value_by_league_over_time(clubs_top5, valuations):
         how="left",
     )
     v = v.dropna(subset=["league_id"])
-    # Exclude last year if incomplete: if latest valuation is before Oct 1 of that year, drop that year
-    max_date = v["date"].max()
-    if pd.notna(max_date):
-        last_year = max_date.year
-        if max_date.month < 10:
-            v = v[v["date"].dt.year < last_year]
     v["month"] = v["date"].dt.to_period("M")
     by_month_league = (
         v.groupby(["month", "league_id", "league_name"])
@@ -102,12 +95,8 @@ def squad_value_by_league_over_time(clubs_top5, valuations):
 
 @st.cache_data
 def squad_value_by_club_over_time(club_id, valuations):
-    """Squad value by year for one club: one value per year = highest total in that year.
-    Excludes the final year if incomplete to avoid a misleading drop."""
+    """Squad value by year for one club: one value per year = highest total in that year. Includes all years in the data (including 2026)."""
     v = valuations[valuations["current_club_id"] == club_id].copy()
-    max_date = v["date"].max()
-    if pd.notna(max_date) and max_date.month < 10:
-        v = v[v["date"].dt.year < max_date.year]
     v["month"] = v["date"].dt.to_period("M")
     by_month = v.groupby("month").agg(squad_value_eur=("market_value_in_eur", "sum")).reset_index()
     by_month["year"] = by_month["month"].apply(lambda p: p.year)
@@ -132,7 +121,7 @@ def format_eur(x):
 
 @st.cache_data
 def load_appearances_data():
-    """Load appearances, players, clubs; compute timeframe and club_ids still in each league (latest season = 2025-style)."""
+    """Load appearances, players, clubs (via load_csv so split files are included); compute timeframe and club_ids still in each league from latest season in data (e.g. through 2026)."""
     appearances = load_csv(DATA_DIR, "appearances")
     players = load_csv(DATA_DIR, "players")
     clubs = load_csv(DATA_DIR, "clubs")
@@ -141,7 +130,7 @@ def load_appearances_data():
     year_min = int(valid.min().year) if len(valid) else None
     year_max = int(valid.max().year) if len(valid) else None
     appearances = appearances.drop(columns=["_date"])
-    # Clubs still in each league: use latest season in dataset (e.g. 2024/2025)
+    # Clubs still in each league: use latest season in dataset (through 2025/2026 as in data)
     clubs_top5 = clubs[clubs["domestic_competition_id"].isin(TOP5_LEAGUES)].copy()
     clubs_top5["last_season_num"] = pd.to_numeric(clubs_top5["last_season"], errors="coerce")
     latest_season = clubs_top5["last_season_num"].max()
@@ -246,18 +235,18 @@ def _bar_chart_appearances(
 
 
 def _run_appearances_section():
-    """Render the Appearances section: top 10 charts per league, top 5 combined, all leagues."""
-    st.header("Top 10 most appearances up to 2025")
+    """Render the Appearances section: top 10 charts per league, top 5 combined, all leagues. Uses all data including 2026."""
+    st.header("Top 10 most appearances (through latest data)")
     st.subheader("Current players by appearances")
     with st.spinner("Loading appearances data…"):
         appearances, players, year_min, year_max, club_ids_per_league = load_appearances_data()
 
     if year_min is not None and year_max is not None:
-        timeframe_str = f"Appearances between {year_min} and {year_max}. Data covers only this period; totals before or after are not included."
+        timeframe_str = f"Appearances between {year_min} and {year_max}. Data includes all dates in the dataset (through 2026 when present)."
     else:
         timeframe_str = "Appearance dates could not be determined."
 
-    # Per-league: only players still in that league (current club in league as of latest season / 2025)
+    # Per-league: only players still in that league (current club in league as of latest season in data)
     st.markdown("**Per league** — Only players who still play in that league (current squad in latest season). Appearances in that competition only.")
     comp_to_name = {
         "GB1": "Premier League",
@@ -302,8 +291,7 @@ def _run_appearances_section():
 
 @st.cache_data
 def load_home_formations_series(competition_id: str | None):
-    """Use club_games (home) + games; domestic league only. Optionally filter by competition_id (league).
-    competition_id=None: all domestic leagues; else e.g. GB1 for Premier League. Top 8 formations, rolling 3-month avg."""
+    """Use club_games (home) + games (both via load_csv for latest/split data); domestic league only. Optionally filter by competition_id. Top 8 formations, rolling 3-month avg. Includes all dates in data (e.g. through 2026)."""
     club_games = load_csv(DATA_DIR, "club_games")
     games = load_csv(DATA_DIR, "games")
     games["date"] = pd.to_datetime(games["date"], errors="coerce")
@@ -380,8 +368,7 @@ def _run_home_formations_section():
 
 @st.cache_data
 def load_scored_not_lost_streaks():
-    """Top 10 longest current streak: scored and team did not lose. Domestic league only.
-    Only includes players who scored and played at least one domestic league match in the latest year of data (excludes retired)."""
+    """Top 10 longest current streak: scored and team did not lose. Domestic league only. Uses latest year in data (e.g. 2026) for active players. Data loaded via load_csv (includes split files)."""
     appearances = load_csv(DATA_DIR, "appearances")
     games = load_csv(DATA_DIR, "games")
     games = games[games["competition_type"] == "domestic_league"]
@@ -494,12 +481,12 @@ def main():
     # Top-level section
     section = st.sidebar.radio(
         "Section",
-        ["Player and squad value", "Top 10 most appearances up to 2025", "Home formations", "Scored & not lost streak"],
+        ["Player and squad value", "Top 10 most appearances", "Home formations", "Scored & not lost streak"],
         index=0,
         label_visibility="collapsed",
     )
 
-    if section == "Top 10 most appearances up to 2025":
+    if section == "Top 10 most appearances":
         _run_appearances_section()
         return
     if section == "Home formations":
@@ -550,7 +537,7 @@ def main():
                 yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False),
             )
             st.plotly_chart(fig, use_container_width=True)
-        st.caption("One value per year (highest total squad value in that year). The latest year is omitted if valuation data does not yet cover the full year (avoids a misleading drop).")
+        st.caption("One value per year (highest total squad value in that year). Includes all years in the data (through 2026 when present); the latest year may be partial.")
 
     elif view == "Most valuable players by league":
         st.header("Most valuable players by league")
@@ -619,7 +606,7 @@ def main():
                     yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False),
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption("One value per year (highest total squad value in that year).")
+                st.caption("One value per year (highest total squad value in that year). Includes all years in the data (e.g. through 2026).")
 
         with tab2:
             # Only players who still play for this club (current_club_id = club_id); current market value
