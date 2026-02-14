@@ -11,6 +11,8 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent
 TOP5_LEAGUES = ("GB1", "ES1", "IT1", "L1", "FR1")  # Premier League, La Liga, Serie A, Bundesliga, Ligue 1
+# Top 10 appearances: only players who have appeared in the relevant league(s) after this date
+APPEARANCES_ACTIVE_CUTOFF = pd.Timestamp("2025-08-01")  # after July 2025
 
 
 def load_csv(basedir: Path, name: str) -> pd.DataFrame:
@@ -152,14 +154,19 @@ def appearances_top10_in_league(
     players: pd.DataFrame,
     club_ids_current: set,
 ) -> pd.DataFrame:
-    """Top 10 players still in this league (current club in league as of latest season) by appearances in this league."""
+    """Top 10 players still in this league who have appeared in this league after July 2025; by appearances in this league."""
+    app_in_league = appearances[appearances["competition_id"] == league_id].copy()
+    app_in_league["_date"] = pd.to_datetime(app_in_league["date"], errors="coerce")
+    active_in_league = set(
+        app_in_league[app_in_league["_date"] >= APPEARANCES_ACTIVE_CUTOFF]["player_id"].dropna().astype(int).unique()
+    )
     current_in_league = players[
         players["current_club_id"].notna()
         & players["current_club_id"].astype(int).isin(club_ids_current)
     ][["player_id", "name"]].drop_duplicates(subset=["player_id"])
-    app_in_league = appearances[appearances["competition_id"] == league_id]
+    eligible = current_in_league[current_in_league["player_id"].astype(int).isin(active_in_league)]
     counts = app_in_league.groupby("player_id").size().reset_index(name="appearances")
-    merged = counts.merge(current_in_league, on="player_id", how="inner")
+    merged = counts.merge(eligible, on="player_id", how="inner")
     top10 = merged.nlargest(10, "appearances")
     top10["league_name"] = league_name
     return top10
@@ -167,22 +174,34 @@ def appearances_top10_in_league(
 
 @st.cache_data
 def appearances_top10_top5_leagues(appearances: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
-    """Top 10 current players (current club in top 5 league) by total appearances (all competitions)."""
+    """Top 10 current players (current club in top 5 league) who have appeared in a top 5 league after July 2025; by total appearances (all competitions)."""
+    app_top5 = appearances[appearances["competition_id"].isin(TOP5_LEAGUES)].copy()
+    app_top5["_date"] = pd.to_datetime(app_top5["date"], errors="coerce")
+    active_top5 = set(
+        app_top5[app_top5["_date"] >= APPEARANCES_ACTIVE_CUTOFF]["player_id"].dropna().astype(int).unique()
+    )
     current_top5 = players[
         players["current_club_domestic_competition_id"].isin(TOP5_LEAGUES)
         & players["current_club_id"].notna()
     ][["player_id", "name"]].drop_duplicates(subset=["player_id"])
+    eligible = current_top5[current_top5["player_id"].astype(int).isin(active_top5)]
     counts = appearances.groupby("player_id").size().reset_index(name="appearances")
-    merged = counts.merge(current_top5, on="player_id", how="inner")
+    merged = counts.merge(eligible, on="player_id", how="inner")
     return merged.nlargest(10, "appearances")
 
 
 @st.cache_data
 def appearances_top10_all_leagues(appearances: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
-    """Top 10 current players (any league) by total appearances (all competitions)."""
+    """Top 10 current players (any league) who have made an appearance after July 2025; by total appearances (all competitions)."""
+    app_dates = appearances.copy()
+    app_dates["_date"] = pd.to_datetime(app_dates["date"], errors="coerce")
+    active_any = set(
+        app_dates[app_dates["_date"] >= APPEARANCES_ACTIVE_CUTOFF]["player_id"].dropna().astype(int).unique()
+    )
     current_any = players[players["current_club_id"].notna()][["player_id", "name"]].drop_duplicates(subset=["player_id"])
+    eligible = current_any[current_any["player_id"].astype(int).isin(active_any)]
     counts = appearances.groupby("player_id").size().reset_index(name="appearances")
-    merged = counts.merge(current_any, on="player_id", how="inner")
+    merged = counts.merge(eligible, on="player_id", how="inner")
     return merged.nlargest(10, "appearances")
 
 
@@ -246,8 +265,8 @@ def _run_appearances_section():
     else:
         timeframe_str = "Appearance dates could not be determined."
 
-    # Per-league: only players still in that league (current club in league as of latest season in data)
-    st.markdown("**Per league** — Only players who still play in that league (current squad in latest season). Appearances in that competition only.")
+    # Per-league: only players still in that league who have appeared in that league after July 2025
+    st.markdown("**Per league** — Only players who still play in that league and have made at least one appearance in that league after July 2025. Appearances in that competition only.")
     comp_to_name = {
         "GB1": "Premier League",
         "ES1": "La Liga",
@@ -267,7 +286,7 @@ def _run_appearances_section():
         )
 
     st.divider()
-    st.markdown("**Top 5 leagues combined** — Current players at a top‑5 club; total appearances in all competitions.")
+    st.markdown("**Top 5 leagues combined** — Current players at a top‑5 club who have appeared in a top‑5 league after July 2025; total appearances in all competitions.")
     top10_top5 = appearances_top10_top5_leagues(appearances, players)
     _bar_chart_appearances(
         top10_top5,
@@ -276,7 +295,7 @@ def _run_appearances_section():
     )
 
     st.divider()
-    st.markdown("**All leagues** — Current players at any club; total appearances in all competitions.")
+    st.markdown("**All leagues** — Current players at any club who have made an appearance after July 2025; total appearances in all competitions.")
     top10_all = appearances_top10_all_leagues(appearances, players)
     _bar_chart_appearances(
         top10_all,
@@ -284,7 +303,7 @@ def _run_appearances_section():
         timeframe_str,
     )
 
-    st.caption("Current players = players with a current club in the dataset. Per‑league charts only include players still in that league (latest season).")
+    st.caption("Current players = players with a current club. All charts only include players with at least one appearance after July 2025 in the relevant league(s). Per‑league: must have appeared in that league after July 2025.")
 
 
 # ---- Home formations: rolling 3-month average of top 8 ----
