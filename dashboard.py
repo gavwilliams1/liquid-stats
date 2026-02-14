@@ -421,16 +421,23 @@ def load_scored_not_lost_streaks():
     streak_list = []
     for player_id, g in merged.groupby("player_id"):
         n = 0
+        streak_start = None
+        streak_latest = None
         for _, row in g.iterrows():
             if row["not_lost"]:
                 n += 1
+                streak_start = row["date"]
+                if streak_latest is None:
+                    streak_latest = row["date"]
             else:
                 break
-        if n > 0:
+        if n > 0 and streak_start is not None and streak_latest is not None:
             streak_list.append({
                 "player_id": player_id,
                 "player_name": g["player_name"].iloc[0],
                 "streak": n,
+                "streak_start": streak_start,
+                "streak_latest": streak_latest,
             })
     streaks = pd.DataFrame(streak_list)
     if streaks.empty:
@@ -447,7 +454,18 @@ def _run_scored_not_lost_streak_section():
     if top10.empty:
         st.info("No streak data available.")
         return
-    display = top10[["player_name", "streak"]].rename(columns={"player_name": "Player", "streak": "Current streak"})
+    top10["position"] = range(1, len(top10) + 1)
+    top10["streak_start_str"] = pd.to_datetime(top10["streak_start"]).dt.strftime("%Y-%m-%d")
+    top10["streak_latest_str"] = pd.to_datetime(top10["streak_latest"]).dt.strftime("%Y-%m-%d")
+    display = top10[["position", "player_name", "streak", "streak_start_str", "streak_latest_str"]].rename(
+        columns={
+            "position": "Rank",
+            "player_name": "Player",
+            "streak": "Current streak",
+            "streak_start_str": "Streak started",
+            "streak_latest_str": "Latest match (scored, not lost)",
+        }
+    )
     st.dataframe(display, use_container_width=True, hide_index=True)
     st.caption("Domestic league matches only. Only players who scored and played in the latest year of data (active players). Streak = consecutive games (most recent first) with a goal and no defeat (win or draw).")
 
