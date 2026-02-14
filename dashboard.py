@@ -247,8 +247,8 @@ def _bar_chart_appearances(
 
 def _run_appearances_section():
     """Render the Appearances section: top 10 charts per league, top 5 combined, all leagues."""
-    st.header("Appearances")
-    st.subheader("Top 10 current players by appearances")
+    st.header("Top 10 most appearances up to 2025")
+    st.subheader("Current players by appearances")
     with st.spinner("Loading appearances data…"):
         appearances, players, year_min, year_max, club_ids_per_league = load_appearances_data()
 
@@ -494,12 +494,12 @@ def main():
     # Top-level section
     section = st.sidebar.radio(
         "Section",
-        ["Squad value", "Appearances", "Home formations", "Scored & not lost streak"],
+        ["Player and squad value", "Top 10 most appearances up to 2025", "Home formations", "Scored & not lost streak"],
         index=0,
         label_visibility="collapsed",
     )
 
-    if section == "Appearances":
+    if section == "Top 10 most appearances up to 2025":
         _run_appearances_section()
         return
     if section == "Home formations":
@@ -509,13 +509,18 @@ def main():
         _run_scored_not_lost_streak_section()
         return
 
-    # ---- Squad value section ----
+    # ---- Player and squad value section ----
     data = load_data()
     clubs_top5 = data["clubs"]
     valuations = data["valuations"]
     players = data["players"]
 
-    view = st.sidebar.radio("View", ["Summary by league", "Club detail"], index=0, key="squad_view")
+    view = st.sidebar.radio(
+        "View",
+        ["Summary by league", "Club detail", "Most valuable players by league"],
+        index=0,
+        key="squad_view",
+    )
 
     if view == "Summary by league":
         st.header("Squad value over time")
@@ -546,6 +551,24 @@ def main():
             )
             st.plotly_chart(fig, use_container_width=True)
         st.caption("One value per year (highest total squad value in that year). The latest year is omitted if valuation data does not yet cover the full year (avoids a misleading drop).")
+
+    elif view == "Most valuable players by league":
+        st.header("Most valuable players by league")
+        st.markdown("Current market value; players in each top 5 league, sorted by value (top 15 per league).")
+        comp_to_name = {"GB1": "Premier League", "ES1": "La Liga", "IT1": "Serie A", "L1": "Bundesliga", "FR1": "Ligue 1"}
+        players["value_eur"] = pd.to_numeric(players["market_value_in_eur"], errors="coerce")
+        players_with_value = players.dropna(subset=["value_eur"]).copy()
+        for league_id in TOP5_LEAGUES:
+            league_name = comp_to_name[league_id]
+            in_league = players_with_value[
+                players_with_value["current_club_domestic_competition_id"].fillna("").eq(league_id)
+            ]
+            top = in_league.nlargest(15, "value_eur")[["name", "position", "value_eur"]].copy()
+            top["Value"] = top["value_eur"].apply(format_eur)
+            top = top.rename(columns={"name": "Player", "position": "Position"})[["Player", "Position", "Value"]]
+            st.subheader(league_name)
+            st.dataframe(top, use_container_width=True, hide_index=True)
+        st.caption("Source: players dataset (current club and market value). Top 15 per league.")
 
     else:
         st.header("Club detail")
