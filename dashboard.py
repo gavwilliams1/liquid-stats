@@ -347,20 +347,23 @@ def load_scored_not_lost_streaks():
     )
     merged["not_lost"] = merged["team_goals"] >= merged["opp_goals"]
     merged = merged.sort_values(["player_id", "date"], ascending=[True, False])
+    # Latest match = most recent game in which they scored (domestic league) on or after August 2025
+    latest_scored_after_cutoff = merged[merged["date"] >= STREAK_ACTIVE_CUTOFF].groupby("player_id")["date"].max()
     streak_list = []
     for player_id, g in merged.groupby("player_id"):
         n = 0
         streak_start = None
-        streak_latest = None
         for _, row in g.iterrows():
             if row["not_lost"]:
                 n += 1
                 streak_start = row["date"]
-                if streak_latest is None:
-                    streak_latest = row["date"]
             else:
                 break
-        if n > 0 and streak_start is not None and streak_latest is not None:
+        if n > 0 and streak_start is not None:
+            # Latest match = most recent scored game after Aug 2025 (not necessarily the start of the streak)
+            streak_latest = latest_scored_after_cutoff.get(player_id)
+            if streak_latest is None:
+                continue  # should not happen for active_scorers
             streak_list.append({
                 "player_id": player_id,
                 "player_name": g["player_name"].iloc[0],
