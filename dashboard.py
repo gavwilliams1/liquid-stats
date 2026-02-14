@@ -221,6 +221,92 @@ def _run_substitution_minutes_section():
     st.caption("Data: game_events (Substitutions) in domestic league matches, 2025-26 season. Y-axis = proportion of all substitutions in that league(s).")
 
 
+# ---- Goal minutes: relative frequency histogram (2025-26 domestic league) ----
+
+@st.cache_data
+def load_goal_minutes(competition_id: str | None):
+    """Minutes when goals were scored in 2025-26 domestic league games. competition_id None = all top 5 leagues."""
+    game_events = load_csv(DATA_DIR, "game_events")
+    games = load_csv(DATA_DIR, "games")
+    games["season"] = pd.to_numeric(games["season"], errors="coerce")
+    dom = games[
+        (games["competition_type"] == "domestic_league")
+        & (games["season"] == SUBSTITUTION_SEASON)
+        & (games["competition_id"].isin(TOP5_LEAGUES))
+    ]
+    if competition_id is not None:
+        dom = dom[dom["competition_id"] == competition_id]
+    game_ids = set(dom["game_id"])
+    goals = game_events[
+        (game_events["type"].astype(str).str.strip().str.lower() == "goals")
+        & (game_events["game_id"].isin(game_ids))
+    ].copy()
+    if goals.empty:
+        return pd.Series(dtype=float)
+    def parse_minute(m):
+        if pd.isna(m):
+            return None
+        s = str(m).strip()
+        if "+" in s:
+            s = s.split("+")[0].strip()
+        return pd.to_numeric(s, errors="coerce")
+
+    goals["minute_num"] = goals["minute"].apply(parse_minute)
+    goals = goals.dropna(subset=["minute_num"])
+    goals = goals[(goals["minute_num"] >= 0) & (goals["minute_num"] <= 120)]
+    return goals["minute_num"]
+
+
+def _run_goal_minutes_section():
+    """Relative frequency histogram of goal minutes in 2025-26 domestic league; filter by top 5 league."""
+    st.header("Goal minutes")
+    st.subheader("2025-26 domestic league — when goals are scored")
+    league_options = [
+        ("All top 5 leagues", None),
+        ("Premier League", "GB1"),
+        ("La Liga", "ES1"),
+        ("Serie A", "IT1"),
+        ("Bundesliga", "L1"),
+        ("Ligue 1", "FR1"),
+    ]
+    league_label = st.sidebar.selectbox(
+        "League",
+        [x[0] for x in league_options],
+        index=0,
+        key="goal_minutes_league",
+    )
+    competition_id = next(x[1] for x in league_options if x[0] == league_label)
+    with st.spinner("Loading goal data…"):
+        minutes = load_goal_minutes(competition_id)
+    if minutes.empty or len(minutes) == 0:
+        st.info("No goal data for 2025-26 domestic league in this selection.")
+        return
+    title_suffix = f" — {league_label}" if league_label != "All top 5 leagues" else " (all top 5 leagues)"
+    fig = px.histogram(
+        x=minutes,
+        nbins=min(91, int(minutes.max() - minutes.min() + 1) if minutes.max() > minutes.min() else 90),
+        range_x=[0, 91],
+        labels={"x": "Minute", "y": "Relative frequency"},
+        title="Relative frequency of goal minute" + title_suffix,
+        histnorm="probability",
+    )
+    fig.update_traces(marker_color=CHART_BAR_COLOR)
+    fig.update_layout(
+        height=CHART_HEIGHT,
+        autosize=True,
+        showlegend=False,
+        font=dict(family=CHART_FONT, size=13, color="#1a1a1a"),
+        paper_bgcolor=CHART_BG,
+        plot_bgcolor=CHART_BG,
+        margin=CHART_MARGIN,
+        title=dict(font=dict(size=18), x=0, xanchor="left"),
+        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False, dtick=5),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", zeroline=False, tickformat=".1%"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Data: game_events (Goals) in domestic league matches, 2025-26 season. Y-axis = proportion of all goals in that league(s).")
+
+
 # ---- Home formations: rolling 3-month average of top 8 ----
 
 @st.cache_data
@@ -449,13 +535,16 @@ def main():
     # Top-level section
     section = st.sidebar.radio(
         "Section",
-        ["Player and squad value", "Substitution minutes", "Home formations", "Scored & not lost streak"],
+        ["Player and squad value", "Substitution minutes", "Goal minutes", "Home formations", "Scored & not lost streak"],
         index=0,
         label_visibility="collapsed",
     )
 
     if section == "Substitution minutes":
         _run_substitution_minutes_section()
+        return
+    if section == "Goal minutes":
+        _run_goal_minutes_section()
         return
     if section == "Home formations":
         _run_home_formations_section()
