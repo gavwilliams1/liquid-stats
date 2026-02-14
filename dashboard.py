@@ -114,17 +114,134 @@ def format_eur(x):
     return f"€{x:.0f}"
 
 
+# ---- Appearances (separate from squad value) ----
+
+@st.cache_data
+def load_appearances_data():
+    """Load appearances and players for the appearances section."""
+    appearances = load_csv(DATA_DIR, "appearances")
+    players = load_csv(DATA_DIR, "players")
+    return appearances, players
+
+
+@st.cache_data
+def appearances_top10_in_league(league_id: str, league_name: str, appearances: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Top 10 current players in this league by appearances in this league."""
+    current_in_league = players[
+        players["current_club_domestic_competition_id"].fillna("").eq(league_id)
+        & players["current_club_id"].notna()
+    ][["player_id", "name"]].drop_duplicates(subset=["player_id"])
+    app_in_league = appearances[appearances["competition_id"] == league_id]
+    counts = app_in_league.groupby("player_id").size().reset_index(name="appearances")
+    merged = counts.merge(current_in_league, on="player_id", how="inner")
+    top10 = merged.nlargest(10, "appearances")
+    top10["league_name"] = league_name
+    return top10
+
+
+@st.cache_data
+def appearances_top10_top5_leagues(appearances: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Top 10 current players (current club in top 5 league) by total appearances (all competitions)."""
+    current_top5 = players[
+        players["current_club_domestic_competition_id"].isin(TOP5_LEAGUES)
+        & players["current_club_id"].notna()
+    ][["player_id", "name"]].drop_duplicates(subset=["player_id"])
+    counts = appearances.groupby("player_id").size().reset_index(name="appearances")
+    merged = counts.merge(current_top5, on="player_id", how="inner")
+    return merged.nlargest(10, "appearances")
+
+
+@st.cache_data
+def appearances_top10_all_leagues(appearances: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Top 10 current players (any league) by total appearances (all competitions)."""
+    current_any = players[players["current_club_id"].notna()][["player_id", "name"]].drop_duplicates(subset=["player_id"])
+    counts = appearances.groupby("player_id").size().reset_index(name="appearances")
+    merged = counts.merge(current_any, on="player_id", how="inner")
+    return merged.nlargest(10, "appearances")
+
+
+def _bar_chart_appearances(df: pd.DataFrame, title: str, y_label: str = "Appearances") -> None:
+    """Render a horizontal bar chart for appearance counts."""
+    if df.empty:
+        st.info(f"No data for {title}.")
+        return
+    df = df.sort_values("appearances", ascending=True)
+    fig = px.bar(
+        df,
+        x="appearances",
+        y="name",
+        orientation="h",
+        labels={"appearances": y_label, "name": "Player"},
+        title=title,
+        text="appearances",
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(yaxis_categoryorder="total ascending", showlegend=False, height=400)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _run_appearances_section():
+    """Render the Appearances section: top 10 charts per league, top 5 combined, all leagues."""
+    st.header("Appearances — Top 10 current players by appearances")
+    with st.spinner("Loading appearances data…"):
+        appearances, players = load_appearances_data()
+
+    # 1) One chart per top 5 league (appearances in that league only)
+    st.subheader("Per league (appearances in that league)")
+    comp_to_name = {
+        "GB1": "Premier League",
+        "ES1": "La Liga",
+        "IT1": "Serie A",
+        "L1": "Bundesliga",
+        "FR1": "Ligue 1",
+    }
+    for league_id in TOP5_LEAGUES:
+        league_name = comp_to_name[league_id]
+        top10 = appearances_top10_in_league(league_id, league_name, appearances, players)
+        _bar_chart_appearances(
+            top10,
+            f"Top 10 — {league_name} (current players, appearances in {league_name})",
+        )
+
+    st.divider()
+    # 2) Top 10 among current players in top 5 leagues (total appearances)
+    st.subheader("Top 5 leagues combined (total appearances)")
+    top10_top5 = appearances_top10_top5_leagues(appearances, players)
+    _bar_chart_appearances(
+        top10_top5,
+        "Top 10 appearances — current players in the top 5 European leagues (all competitions)",
+    )
+
+    st.divider()
+    # 3) Top 10 among current players in any league (total appearances)
+    st.subheader("All leagues (total appearances)")
+    top10_all = appearances_top10_all_leagues(appearances, players)
+    _bar_chart_appearances(
+        top10_all,
+        "Top 10 appearances — current players in any league (all competitions)",
+    )
+
+    st.caption("Current players = players with a current club in the dataset. Appearances are career totals in the relevant competition(s).")
+
+
 def main():
     st.set_page_config(page_title="Squad value dashboard", layout="wide")
-    st.title("Squad value dashboard — Top 5 European leagues")
+    st.title("Top 5 European leagues — Squad value & Appearances")
 
+    # Top-level section: Squad value vs Appearances
+    section = st.sidebar.radio("Section", ["Squad value", "Appearances"], index=0)
+
+    if section == "Appearances":
+        _run_appearances_section()
+        return
+
+    # ---- Squad value section ----
     data = load_data()
     clubs_top5 = data["clubs"]
     valuations = data["valuations"]
     players = data["players"]
 
-    # Sidebar: view mode
-    view = st.sidebar.radio("View", ["Summary by league", "Club detail"], index=0)
+    view = st.sidebar.radio("View", ["Summary by league", "Club detail"], index=0, key="squad_view")
 
     if view == "Summary by league":
         st.header("Squad value over time (all clubs, by league)")

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Squad value dashboard
 
 Dashboard for squad values across the top five European leagues (Premier League, La Liga, Serie A, Bundesliga, Ligue 1), using `clubs`, `players`, and `player_valuations` CSVs.
@@ -86,3 +87,7 @@ streamlit run dashboard.py
 ```
 
 Then open the URL shown in the terminal (usually http://localhost:8501).
+=======
+# liquid-stats
+Gav's messing around with glorious football stats
+>>>>>>> 6fdf0c2782041c41c96231f274e4e0eda13acc1f
